@@ -1,0 +1,67 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id            String      @id @default(uuid())
+  name          String?
+  email         String      @unique
+  password      String?     // Hash for CredentialsProvider authentication
+  image         String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  configs       AppConfig[]
+  records       Record[]
+}
+
+model AppConfig {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   // e.g., "students", "employees", "projects"
+  config      Json     // The application configuration JSON
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workflows   Workflow[]
+
+  @@unique([userId, slug])
+}
+
+model Record {
+  id          String   @id @default(uuid())
+  collection  String   // e.g., "students", "employees", "projects"
+  data        Json     // The dynamic data fields
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, collection])
+}
+
+model Workflow {
+  id          String    @id @default(uuid())
+  appConfigId String
+  appConfig   AppConfig @relation(fields: [appConfigId], references: [id], onDelete: Cascade)
+  trigger     String    // e.g., "form_submit"
+  action      String    // e.g., "notification", "log", "webhook"
+  config      Json      // Workflow parameters and templates
+  createdAt   DateTime  @default(now())
+}
+
+model WorkflowLog {
+  id          String    @id @default(uuid())
+  workflowId  String
+  trigger     String
+  action      String
+  status      String    // "SUCCESS" | "FAILED"
+  message     String
+  payload     Json?
+  createdAt   DateTime  @default(now())
+}
