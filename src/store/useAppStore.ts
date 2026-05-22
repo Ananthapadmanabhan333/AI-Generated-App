@@ -8,6 +8,7 @@ interface AppStore {
   workflowLogs: any[];
   isLoading: boolean;
   error: string | null;
+  sandboxMode: boolean;
 
   fetchConfigs: () => Promise<void>;
   saveConfig: (
@@ -32,6 +33,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   workflowLogs: [],
   isLoading: false,
   error: null,
+  sandboxMode: false,
 
   fetchConfigs: async () => {
     set({ isLoading: true, error: null });
@@ -39,7 +41,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const res = await fetch('/api/config');
       const data = await res.json();
       if (data.success) {
-        set({ configs: data.data });
+        set({ configs: data.data, sandboxMode: !!data.sandboxMode });
       } else {
         set({ error: data.error || 'Failed to load configurations' });
       }
@@ -71,6 +73,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       const data = await res.json();
       if (data.success) {
+        set({ sandboxMode: !!data.sandboxMode });
         await get().fetchConfigs();
         set({ activeConfig: data.data });
         return data.data;

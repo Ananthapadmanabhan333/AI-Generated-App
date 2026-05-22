@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma';
+import { sandboxDb } from '@/lib/sandboxDb';
 
 export interface WorkflowActionConfig {
   message?: string;
@@ -33,10 +34,16 @@ export async function executeWorkflows(
   recordData: Record<string, any>
 ) {
   try {
-    const appConfig = await prisma.appConfig.findUnique({
-      where: { id: appConfigId },
-      include: { workflows: true },
-    });
+    let appConfig;
+    try {
+      appConfig = await prisma.appConfig.findUnique({
+        where: { id: appConfigId },
+        include: { workflows: true },
+      });
+    } catch (dbError: any) {
+      console.warn('PostgreSQL database offline or unconfigured. Checking configurations inside Sandbox Memory for workflows.', dbError.message || dbError);
+      appConfig = sandboxDb.configs.find((c) => c.id === appConfigId);
+    }
 
     if (!appConfig) {
       console.warn(`Workflow execution skipped: AppConfig ID "${appConfigId}" not found.`);
@@ -83,17 +90,32 @@ export async function executeWorkflows(
         executionMsg = `Action failed: ${err?.message || String(err)}`;
       }
 
-      // Log execution trace inside PostgreSQL
-      await prisma.workflowLog.create({
-        data: {
+      // Log execution trace
+      try {
+        await prisma.workflowLog.create({
+          data: {
+            workflowId: workflow.id,
+            trigger: workflow.trigger,
+            action: workflow.action,
+            status,
+            message: executionMsg,
+            payload: recordData as any,
+          },
+        });
+      } catch (dbError: any) {
+        console.warn('PostgreSQL database offline or unconfigured. Appending execution trace log inside Sandbox Memory.', dbError.message || dbError);
+        
+        sandboxDb.workflowLogs.unshift({
+          id: 'log-mock-' + Math.random().toString(36).substr(2, 9),
           workflowId: workflow.id,
           trigger: workflow.trigger,
           action: workflow.action,
           status,
           message: executionMsg,
-          payload: recordData as any,
-        },
-      });
+          payload: recordData,
+          createdAt: new Date().toISOString(),
+        });
+      }
     }
   } catch (error) {
     console.error('CRITICAL: Workflow Engine encountered background runtime execution error:', error);

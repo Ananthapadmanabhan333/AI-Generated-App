@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { sandboxDb } from '@/lib/sandboxDb';
 import { generateZodSchema } from '@/lib/validators/schemaGenerator';
 import { executeWorkflows } from '@/lib/workflows/workflowEngine';
 
@@ -36,7 +37,7 @@ async function getUserOrSandboxId(): Promise<string> {
     });
     return newSandbox.id;
   } catch (error) {
-    console.error('Failed finding user session, defaulting to hardcoded fallback context', error);
+    console.warn('Database error in getUserOrSandboxId helper, defaulting to sandbox-user-id:', error);
     return 'sandbox-user-id';
   }
 }
@@ -52,26 +53,33 @@ export async function GET(
     const { collection } = await params;
     const userId = await getUserOrSandboxId();
 
-    const records = await prisma.record.findMany({
-      where: {
-        collection,
-        userId,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    let records;
+    try {
+      records = await prisma.record.findMany({
+        where: {
+          collection,
+          userId,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
 
-    // Expand PostgreSQL JSONB data with top-level fields & system properties
-    const formatted = records.map((rec) => {
-      const dataObj = typeof rec.data === 'object' && rec.data !== null ? rec.data : {};
-      return {
-        id: rec.id,
-        ...dataObj,
-        createdAt: rec.createdAt,
-        updatedAt: rec.updatedAt,
-      };
-    });
+      // Expand PostgreSQL JSONB data with top-level fields & system properties
+      const formatted = records.map((rec) => {
+        const dataObj = typeof rec.data === 'object' && rec.data !== null ? rec.data : {};
+        return {
+          id: rec.id,
+          ...dataObj,
+          createdAt: rec.createdAt,
+          updatedAt: rec.updatedAt,
+        };
+      });
 
-    return NextResponse.json({ success: true, count: formatted.length, data: formatted });
+      return NextResponse.json({ success: true, count: formatted.length, data: formatted });
+    } catch (dbError: any) {
+      console.warn(`PostgreSQL database offline or unconfigured. Pulling records from Sandbox Memory for collection "${collection}".`);
+      const sandboxRecords = sandboxDb.records[collection] || [];
+      return NextResponse.json({ success: true, count: sandboxRecords.length, data: sandboxRecords });
+    }
   } catch (error: any) {
     return NextResponse.json(
       { success: false, error: 'Failed fetching records', details: error?.message },
@@ -93,9 +101,15 @@ export async function POST(
     const body = await request.json();
 
     // Look up configuration to extract field constraints
-    const appConfig = await prisma.appConfig.findFirst({
-      where: { slug: collection, userId },
-    });
+    let appConfig;
+    try {
+      appConfig = await prisma.appConfig.findFirst({
+        where: { slug: collection, userId },
+      });
+    } catch (dbError: any) {
+      console.warn(`PostgreSQL database offline or unconfigured. Pulling configuration schema from Sandbox Memory for collection "${collection}".`);
+      appConfig = sandboxDb.configs.find((c) => c.slug === collection);
+    }
 
     let validatedData = { ...body };
 
@@ -123,32 +137,61 @@ export async function POST(
     }
 
     // Save record to DB
-    const record = await prisma.record.create({
-      data: {
-        collection,
-        userId,
-        data: validatedData,
-      },
-    });
-
-    // Execute triggers asynchronously
-    if (appConfig) {
-      // Execute in background
-      executeWorkflows(appConfig.id, 'form_submit', {
-        id: record.id,
-        ...validatedData,
+    let record;
+    try {
+      record = await prisma.record.create({
+        data: {
+          collection,
+          userId,
+          data: validatedData,
+        },
       });
-    }
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        id: record.id,
+      // Execute triggers asynchronously
+      if (appConfig) {
+        executeWorkflows(appConfig.id, 'form_submit', {
+          id: record.id,
+          ...validatedData,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        });
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          id: record.id,
+          ...validatedData,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        },
+      }, { status: 201 });
+    } catch (dbError: any) {
+      console.warn(`PostgreSQL database offline or unconfigured. Appending record inside Sandbox Memory for collection "${collection}".`);
+      if (!sandboxDb.records[collection]) {
+        sandboxDb.records[collection] = [];
+      }
+      
+      const mockRecordId = 'rec-mock-' + Math.random().toString(36).substr(2, 9);
+      const mockRec = {
+        id: mockRecordId,
         ...validatedData,
-        createdAt: record.createdAt,
-        updatedAt: record.updatedAt,
-      },
-    }, { status: 201 });
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      sandboxDb.records[collection].unshift(mockRec);
+
+      // Execute triggers inside Sandbox if config exists
+      if (appConfig) {
+        executeWorkflows(appConfig.id, 'form_submit', mockRec);
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: mockRec,
+      }, { status: 201 });
+    }
   } catch (error: any) {
     return NextResponse.json(
       { success: false, error: 'Failed creating record', details: error?.message },
@@ -180,9 +223,16 @@ export async function PUT(
     }
 
     // Ensure record exists and belongs to user
-    const existing = await prisma.record.findFirst({
-      where: { id: recordId, collection, userId },
-    });
+    let existing;
+    try {
+      existing = await prisma.record.findFirst({
+        where: { id: recordId, collection, userId },
+      });
+    } catch (dbError: any) {
+      console.warn(`PostgreSQL database offline or unconfigured. Finding record in Sandbox Memory for collection "${collection}".`);
+      const sandboxRecords = sandboxDb.records[collection] || [];
+      existing = sandboxRecords.find((r) => r.id === recordId);
+    }
 
     if (!existing) {
       return NextResponse.json(
@@ -191,9 +241,15 @@ export async function PUT(
       );
     }
 
-    const appConfig = await prisma.appConfig.findFirst({
-      where: { slug: collection, userId },
-    });
+    let appConfig;
+    try {
+      appConfig = await prisma.appConfig.findFirst({
+        where: { slug: collection, userId },
+      });
+    } catch (dbError: any) {
+      console.warn(`PostgreSQL database offline. Finding schema configurations inside Sandbox Memory for collection "${collection}".`);
+      appConfig = sandboxDb.configs.find((c) => c.slug === collection);
+    }
 
     let validatedData = { ...body };
     delete validatedData.id; // Clean internal primary keys
@@ -221,23 +277,49 @@ export async function PUT(
     }
 
     // Merge updates
-    const currentData = typeof existing.data === 'object' && existing.data !== null ? existing.data : {};
-    const mergedData = { ...currentData, ...validatedData };
+    try {
+      const currentData = typeof existing.data === 'object' && existing.data !== null ? existing.data : {};
+      const mergedData = { ...currentData, ...validatedData };
 
-    const updated = await prisma.record.update({
-      where: { id: recordId },
-      data: { data: mergedData },
-    });
+      const updated = await prisma.record.update({
+        where: { id: recordId },
+        data: { data: mergedData },
+      });
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        id: updated.id,
-        ...mergedData,
-        createdAt: updated.createdAt,
-        updatedAt: updated.updatedAt,
-      },
-    });
+      return NextResponse.json({
+        success: true,
+        data: {
+          id: updated.id,
+          ...mergedData,
+          createdAt: updated.createdAt,
+          updatedAt: updated.updatedAt,
+        },
+      });
+    } catch (dbError: any) {
+      console.warn(`PostgreSQL database offline or unconfigured. Merging record inside Sandbox Memory for collection "${collection}".`);
+      const sandboxRecords = sandboxDb.records[collection] || [];
+      const idx = sandboxRecords.findIndex((r) => r.id === recordId);
+
+      if (idx !== -1) {
+        const mergedData = {
+          ...sandboxRecords[idx],
+          ...validatedData,
+          id: recordId,
+          updatedAt: new Date().toISOString(),
+        };
+        sandboxRecords[idx] = mergedData;
+        
+        return NextResponse.json({
+          success: true,
+          data: mergedData,
+        });
+      } else {
+        return NextResponse.json(
+          { success: false, error: `Record with ID "${recordId}" not found in Sandbox` },
+          { status: 404 }
+        );
+      }
+    }
   } catch (error: any) {
     return NextResponse.json(
       { success: false, error: 'Failed updating record', details: error?.message },
@@ -267,9 +349,16 @@ export async function DELETE(
       );
     }
 
-    const existing = await prisma.record.findFirst({
-      where: { id: recordId, collection, userId },
-    });
+    let existing;
+    try {
+      existing = await prisma.record.findFirst({
+        where: { id: recordId, collection, userId },
+      });
+    } catch (dbError: any) {
+      console.warn(`PostgreSQL database offline or unconfigured. Locating record to delete in Sandbox Memory for collection "${collection}".`);
+      const sandboxRecords = sandboxDb.records[collection] || [];
+      existing = sandboxRecords.find((r) => r.id === recordId);
+    }
 
     if (!existing) {
       return NextResponse.json(
@@ -278,9 +367,23 @@ export async function DELETE(
       );
     }
 
-    await prisma.record.delete({
-      where: { id: recordId },
-    });
+    try {
+      await prisma.record.delete({
+        where: { id: recordId },
+      });
+    } catch (dbError: any) {
+      console.warn(`PostgreSQL database offline or unconfigured. Splicing record out of Sandbox Memory for collection "${collection}".`);
+      const sandboxRecords = sandboxDb.records[collection] || [];
+      const idx = sandboxRecords.findIndex((r) => r.id === recordId);
+      if (idx !== -1) {
+        sandboxRecords.splice(idx, 1);
+      } else {
+        return NextResponse.json(
+          { success: false, error: `Record with ID "${recordId}" not found in Sandbox` },
+          { status: 404 }
+        );
+      }
+    }
 
     return NextResponse.json({ success: true, message: `Record "${recordId}" deleted successfully` });
   } catch (error: any) {

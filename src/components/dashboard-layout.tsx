@@ -14,8 +14,10 @@ import {
   Zap,
   User,
   Shield,
+  AlertTriangle,
 } from 'lucide-react';
 import Link from 'next/link';
+import { useAppStore } from '@/store/useAppStore';
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -25,6 +27,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) =>
   const pathname = usePathname();
   const { data: session } = useSession();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const sandboxMode = useAppStore((state) => state.sandboxMode);
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -54,13 +57,19 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) =>
             <div className="p-2 bg-gradient-to-tr from-indigo-600 to-violet-500 rounded-xl shadow-lg shadow-indigo-500/20 group-hover:scale-105 transition-transform duration-200">
               <Zap className="w-4 h-4 text-white animate-pulse" />
             </div>
-            <div>
+            <div className="flex items-center">
               <span className="font-bold text-sm tracking-wider uppercase text-white bg-clip-text">
                 Talent<span className="text-indigo-400 font-extrabold">OS</span>
               </span>
               <span className="hidden sm:inline-block text-[9px] bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-1.5 py-0.5 rounded-md ml-2 font-mono uppercase font-semibold">
                 Runtime Platform
               </span>
+              {sandboxMode && (
+                <span className="text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded-md ml-2 font-mono uppercase font-bold animate-pulse flex items-center">
+                  <AlertTriangle className="w-2.5 h-2.5 mr-1" />
+                  Sandbox
+                </span>
+              )}
             </div>
           </Link>
         </div>
@@ -127,13 +136,25 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) =>
 
           {/* Sidebar Footer Controls */}
           <div className="border-t border-zinc-900/60 pt-4 space-y-3">
-            <div className="p-3.5 bg-zinc-900/30 border border-zinc-800/80 rounded-xl flex items-center space-x-3">
-              <Shield className="w-4 h-4 text-emerald-400" />
-              <div>
-                <p className="text-[10px] font-semibold text-zinc-300">Resilient Node Active</p>
-                <p className="text-[9px] text-zinc-500">Auto-containment logs</p>
+            {sandboxMode ? (
+              <div className="p-3 bg-amber-500/5 border border-amber-500/10 rounded-xl space-y-1.5">
+                <div className="flex items-center space-x-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <p className="text-[10px] font-bold text-amber-400 uppercase tracking-wide">In-Memory Sandbox</p>
+                </div>
+                <p className="text-[9px] text-zinc-400 leading-normal">
+                  Neon PostgreSQL not linked. Database is running in-memory and will reset periodically.
+                </p>
               </div>
-            </div>
+            ) : (
+              <div className="p-3.5 bg-zinc-900/30 border border-zinc-800/80 rounded-xl flex items-center space-x-3">
+                <Shield className="w-4 h-4 text-emerald-400" />
+                <div>
+                  <p className="text-[10px] font-semibold text-zinc-300">Resilient Node Active</p>
+                  <p className="text-[9px] text-zinc-500">Auto-containment logs</p>
+                </div>
+              </div>
+            )}
             
             <button
               onClick={handleSignOut}
