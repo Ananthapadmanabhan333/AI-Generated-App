@@ -32,7 +32,12 @@ export default function LoginPage() {
       });
 
       if (result?.error) {
-        setErrorMsg('Invalid login details. Please check and try again.');
+        // NextAuth v4 returns CredentialsSignin for standard errors, or bubbles up custom Error messages
+        if (result.error === 'CredentialsSignin') {
+          setErrorMsg('Invalid login details. Please check and try again.');
+        } else {
+          setErrorMsg(result.error);
+        }
       } else {
         router.replace('/dashboard');
       }
